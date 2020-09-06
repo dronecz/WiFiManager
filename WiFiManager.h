@@ -14,6 +14,7 @@
 #ifndef WiFiManager_h
 #define WiFiManager_h
 
+
 #if defined(ESP8266) || defined(ESP32)
 
 #ifdef ESP8266
@@ -67,14 +68,20 @@
 
     #ifndef WEBSERVER_H
         #ifdef WM_WEBSERVERSHIM
-            #include <WebServer.h>
+			#ifdef WIFI_MANAGER_USE_ASYNC_WEB_SERVER
+				#include <ESPAsyncWebServer.h>
+				typedef AsyncWebServer WifiManagerWebServerType;
+				typedef AsyncWebServerRequest WifiManagerWebServerRequestType
+			#else
+				#include <WebServer.h>
+			#endif
         #else
             #include <ESP8266WebServer.h>
             // Forthcoming official ? probably never happening
             // https://github.com/esp8266/ESPWebServer
         #endif
     #endif
-
+		
     #ifdef WM_ERASE_NVS
        #include <nvs.h>
        #include <nvs_flash.h>
@@ -90,10 +97,13 @@
 
 #else
 #endif
-
+#ifndef WIFI_MANAGER_USE_ASYNC_WEB_SERVER
 #include <DNSServer.h>
+#endif
 #include <memory>
+// #ifndef WIFI_MANAGER_USE_ASYNC_WEB_SERVER
 #include "strings_en.h"
+// #endif
 
 #ifndef WIFI_MANAGER_MAX_PARAMS
     #define WIFI_MANAGER_MAX_PARAMS 5 // params will autoincrement and realloc by this amount when max is reached
@@ -349,11 +359,16 @@ class WiFiManager
     
     // set port of webserver, 80
     void          setHttpPort(uint16_t port);
-
+	#ifndef WIFI_MANAGER_USE_ASYNC_WEB_SERVER
     std::unique_ptr<DNSServer>        dnsServer;
-
-    #if defined(ESP32) && defined(WM_WEBSERVERSHIM)
-        using WM_WebServer = WebServer;
+	#endif
+	
+	    #if defined(ESP32) && defined(WM_WEBSERVERSHIM)
+			#ifdef WIFI_MANAGER_USE_ASYNC_WEB_SERVER
+				using WM_WebServer = AsyncWebServer;
+				#else
+				using WM_WebServer = WebServer;
+			#endif
     #else
         using WM_WebServer = ESP8266WebServer;
     #endif

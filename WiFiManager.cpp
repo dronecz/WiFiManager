@@ -356,6 +356,7 @@ bool WiFiManager::setupHostname(bool restart){
 
   if(!res)DEBUG_WM(DEBUG_ERROR,F("[ERROR] hostname: set failed!"));
 
+  // in sta mode restart , not sure about softap
   if(restart && (WiFi.status() == WL_CONNECTED)){
     DEBUG_WM(DEBUG_VERBOSE,F("reconnecting to set new hostname"));
     // WiFi.reconnect(); // This does not reset dhcp
@@ -513,7 +514,17 @@ void WiFiManager::setupConfigPortal() {
   if ( _webservercallback != NULL) {
     _webservercallback();
   }
-
+#ifdef WIFI_MANAGER_USE_ASYNC_WEB_SERVER
+  server->on("/", std::bind(&WiFiManager::handleRoot, this));
+  server->on("/wifi", std::bind(&WiFiManager::handleWifi, this, true));
+  server->on("/0wifi", std::bind(&WiFiManager::handleWifi, this, false));
+  server->on("/wifisave", std::bind(&WiFiManager::handleWifiSave, this));
+  server->on("/i", std::bind(&WiFiManager::handleInfo, this));
+  server->on("/r", std::bind(&WiFiManager::handleReset, this));
+  //server->on("/generate_204", std::bind(&WiFiManager::handle204, this));  //Android/Chrome OS captive portal check.
+  server->on("/fwlink", std::bind(&WiFiManager::handleRoot, this));  //Microsoft captive portal. Maybe not needed. Might be handled by notFound handler.
+  server->onNotFound (std::bind(&WiFiManager::handleNotFound, this));
+  #else
   /* Setup httpd callbacks, web pages: root, wifi config pages, SO captive portal detectors and not found. */
   server->on(String(FPSTR(R_root)).c_str(),       std::bind(&WiFiManager::handleRoot, this));
   server->on(String(FPSTR(R_wifi)).c_str(),       std::bind(&WiFiManager::handleWifi, this, true));
@@ -528,7 +539,7 @@ void WiFiManager::setupConfigPortal() {
   server->on(String(FPSTR(R_erase)).c_str(),      std::bind(&WiFiManager::handleErase, this, false));
   server->on(String(FPSTR(R_status)).c_str(),     std::bind(&WiFiManager::handleWiFiStatus, this));
   server->onNotFound (std::bind(&WiFiManager::handleNotFound, this));
-  
+  #endif
   server->begin(); // Web server start
   DEBUG_WM(DEBUG_VERBOSE,F("HTTP server started"));
 
@@ -837,8 +848,6 @@ bool WiFiManager::wifiConnectDefault(){
   DEBUG_WM(F("Connecting to SAVED AP:"),WiFi_SSID(true));
   DEBUG_WM(DEBUG_DEV,F("Using Password:"),WiFi_psk(true));
   ret = WiFi_enableSTA(true,storeSTAmode);
-  delay(500); // THIS DELAY ?
-  DEBUG_WM(DEBUG_DEV,"Mode after delay: "+getModeString(WiFi.getMode()));
   if(!ret) DEBUG_WM(DEBUG_ERROR,"[ERROR] wifi enableSta failed");
   ret = WiFi.begin();
   if(!ret) DEBUG_WM(DEBUG_ERROR,"[ERROR] wifi begin failed");
@@ -1827,7 +1836,11 @@ void WiFiManager::handleNotFound() {
   handleRequest();
   String message = FPSTR(S_notfound); // @token notfound
   message += FPSTR(S_uri); // @token uri
+  #ifdef WIFI_MANAGER_USE_ASYNC_WEB_SERVER
+  message += server->url();
+  #else
   message += server->uri();
+  #endif
   message += FPSTR(S_method); // @token method
   message += ( server->method() == HTTP_GET ) ? FPSTR(S_GET) : FPSTR(S_POST);
   message += FPSTR(S_args); // @token args
@@ -1837,11 +1850,19 @@ void WiFiManager::handleNotFound() {
   for ( uint8_t i = 0; i < server->args(); i++ ) {
     message += " " + server->argName ( i ) + ": " + server->arg ( i ) + "\n";
   }
+  #ifdef WIFI_MANAGER_USE_ASYNC_WEB_SERVER
+  AsyncWebServerResponse *response = request->beginResponse( 404, "text/plain", message );
+  response->addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  response->addHeader("Pragma", "no-cache");
+  response->addHeader("Expires", "-1");
+  request->send(response);
+#else
   server->sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
   server->sendHeader(F("Pragma"), F("no-cache"));
   server->sendHeader(F("Expires"), F("-1"));
   server->sendHeader(FPSTR(HTTP_HEAD_CL), String(message.length()));
   server->send ( 404, FPSTR(HTTP_HEAD_CT2), message );
+ #endif
 }
 
 /**
@@ -1860,12 +1881,23 @@ boolean WiFiManager::captivePortal() {
   // doredirect = !isIp(server->hostHeader()) // old check
   
   if (doredirect) {
+	  #ifdef WIFI_MANAGER_USE_ASYNC_WEB_SERVER
+  if (!isIp(request->host()) ) {
+    DEBUG_WM(F("Request redirected to captive portal"));
+    AsyncWebServerResponse *response = request->beginResponse(302, "text/plain", "");
+    response->addHeader("Location", String("http://") + toStringIp(request->client().localIP()));
+    request->send(response);
+    request->client().stop(); // Stop is needed because we sent no content length
+    return true;
+  }
+#else
     DEBUG_WM(DEBUG_VERBOSE,F("<- Request redirected to captive portal"));
     server->sendHeader(F("Location"), (String)F("http://") + serverLoc, true);
     server->send ( 302, FPSTR(HTTP_HEAD_CT2), ""); // Empty content inhibits Content-length header so we have to close the socket ourselves.
     server->client().stop(); // Stop is needed because we sent no content length
     return true;
   }
+  #endif
   return false;
 }
 
@@ -2786,14 +2818,14 @@ bool WiFiManager::WiFi_Disconnect() {
     #ifdef ESP8266
       if((WiFi.getMode() & WIFI_STA) != 0) {
           bool ret;
-          DEBUG_WM(DEBUG_DEV,F("WiFi station disconnect"));
+          DEBUG_WM(DEBUG_DEV,F("WIFI station disconnect"));
           ETS_UART_INTR_DISABLE(); // @todo probably not needed
           ret = wifi_station_disconnect();
           ETS_UART_INTR_ENABLE();        
           return ret;
       }
     #elif defined(ESP32)
-      DEBUG_WM(DEBUG_DEV,F("WiFi station disconnect"));
+      DEBUG_WM(DEBUG_DEV,F("WIFI station disconnect"));
       return WiFi.disconnect(); // not persistent atm
     #endif
     return false;
@@ -2801,7 +2833,7 @@ bool WiFiManager::WiFi_Disconnect() {
 
 // toggle STA without persistent
 bool WiFiManager::WiFi_enableSTA(bool enable,bool persistent) {
-    DEBUG_WM(DEBUG_DEV,F("WiFi_enableSTA"),(String) enable? "enable" : "disable");
+    DEBUG_WM(DEBUG_DEV,F("WiFi station enable"));
     #ifdef ESP8266
       WiFiMode_t newMode;
       WiFiMode_t currentMode = WiFi.getMode();
